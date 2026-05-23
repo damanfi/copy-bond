@@ -1,0 +1,15 @@
+# Foundry
+cache/
+out/
+broadcast/
+lib/
+
+# env
+.env
+.env.*
+
+# logs
+*.log
+
+# system
+.DS_Store
