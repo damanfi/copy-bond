@@ -79,7 +79,7 @@ contract DamanCopyBondTest is Test {
     function test_subscribe_transfersCapital() public {
         _activateLeader();
         vm.prank(follower);
-        bond.subscribe(leader, 5_000e18);
+        bond.subscribe(leader, 5_000e18, bytes32(0));
         IDamanCopyBond.Subscription memory s = bond.getSubscription(follower, leader);
         assertEq(s.capital, 5_000e18);
         assertEq(s.leader, leader);
@@ -88,7 +88,7 @@ contract DamanCopyBondTest is Test {
     function test_subscribe_revertsOnInactiveLeader() public {
         vm.prank(follower);
         vm.expectRevert(IDamanCopyBond.NotLeader.selector);
-        bond.subscribe(leader, 5_000e18);
+        bond.subscribe(leader, 5_000e18, bytes32(0));
     }
 
     function test_recordTrade_oracleOnly() public {
@@ -118,7 +118,7 @@ contract DamanCopyBondTest is Test {
     function test_attestDegradation_filesClaim() public {
         _activateLeader();
         vm.prank(watchdog);
-        uint256 claimId = bond.attestDegradation(leader, bytes32("evidence"));
+        uint256 claimId = bond.attestDegradation(leader, bytes32("evidence"), bytes32(0));
         IDamanCopyBond.Claim memory c = bond.getClaim(claimId);
         assertEq(uint8(c.status), uint8(IDamanCopyBond.ClaimStatus.Filed));
         assertEq(c.watchdog, watchdog);
@@ -127,7 +127,7 @@ contract DamanCopyBondTest is Test {
     function test_disputeAttestation_movesToDisputed() public {
         _activateLeader();
         vm.prank(watchdog);
-        uint256 claimId = bond.attestDegradation(leader, bytes32("evidence"));
+        uint256 claimId = bond.attestDegradation(leader, bytes32("evidence"), bytes32(0));
 
         vm.prank(leader);
         bond.disputeAttestation(claimId);
@@ -137,7 +137,7 @@ contract DamanCopyBondTest is Test {
     function test_disputeAttestation_revertsAfterWindow() public {
         _activateLeader();
         vm.prank(watchdog);
-        uint256 claimId = bond.attestDegradation(leader, bytes32("evidence"));
+        uint256 claimId = bond.attestDegradation(leader, bytes32("evidence"), bytes32(0));
         vm.warp(block.timestamp + DISPUTE_WINDOW + 1);
 
         vm.prank(leader);
@@ -151,10 +151,10 @@ contract DamanCopyBondTest is Test {
         uint256 cap = BondEconomics.maxSlashAmount(bondPosted);
 
         vm.prank(watchdog);
-        uint256 claimId = bond.attestDegradation(leader, bytes32("evidence"));
+        uint256 claimId = bond.attestDegradation(leader, bytes32("evidence"), bytes32(0));
 
         vm.prank(arbiter_);
-        bond.arbiterRule(claimId, cap, true);
+        bond.arbiterRule(claimId, cap, true, bytes32(0));
 
         assertEq(bond.getLeader(leader).bondAmount, bondPosted - cap);
         assertEq(usdc.balanceOf(treasury), cap);
@@ -166,11 +166,11 @@ contract DamanCopyBondTest is Test {
         uint256 cap = BondEconomics.maxSlashAmount(bondPosted);
 
         vm.prank(watchdog);
-        uint256 claimId = bond.attestDegradation(leader, bytes32("evidence"));
+        uint256 claimId = bond.attestDegradation(leader, bytes32("evidence"), bytes32(0));
 
         vm.prank(arbiter_);
         vm.expectRevert(abi.encodeWithSelector(IDamanCopyBond.SlashCapExceeded.selector, BondEconomics.SLASH_CAP_BPS));
-        bond.arbiterRule(claimId, cap + 1, true);
+        bond.arbiterRule(claimId, cap + 1, true, bytes32(0));
     }
 
     function test_arbiterRule_rejectedClaimDoesNotSlash() public {
@@ -178,10 +178,10 @@ contract DamanCopyBondTest is Test {
         uint256 bondPosted = bond.getLeader(leader).bondAmount;
 
         vm.prank(watchdog);
-        uint256 claimId = bond.attestDegradation(leader, bytes32("evidence"));
+        uint256 claimId = bond.attestDegradation(leader, bytes32("evidence"), bytes32(0));
 
         vm.prank(arbiter_);
-        bond.arbiterRule(claimId, 0, false);
+        bond.arbiterRule(claimId, 0, false, bytes32(0));
 
         assertEq(bond.getLeader(leader).bondAmount, bondPosted);
         assertEq(uint8(bond.getClaim(claimId).status), uint8(IDamanCopyBond.ClaimStatus.Rejected));
@@ -211,6 +211,32 @@ contract DamanCopyBondTest is Test {
         assertEq(bond.refundProtocol(), refundProtocol);
         assertEq(bond.fiatToken(), address(usdc));
         assertEq(bond.arbiter(), arbiter_);
+    }
+
+    function test_builderAttribution_travelsEndToEnd() public {
+        _activateLeader();
+        bytes32 followerBuilder = bytes32("follower-ui-tag");
+        bytes32 watchdogBuilder = bytes32("watchdog-policy-tag");
+
+        // subscribe writes builder onto the Subscription record.
+        vm.prank(follower);
+        bond.subscribe(leader, 5_000e18, followerBuilder);
+        assertEq(bond.getSubscription(follower, leader).builder, followerBuilder);
+
+        // attestDegradation writes builder onto the Claim record.
+        vm.prank(watchdog);
+        uint256 claimId = bond.attestDegradation(leader, bytes32("evidence"), watchdogBuilder);
+        assertEq(bond.getClaim(claimId).builder, watchdogBuilder);
+
+        // arbiterRule with bytes32(0) inherits the claim's builder.
+        uint256 cap = BondEconomics.maxSlashAmount(bond.getLeader(leader).bondAmount);
+        vm.prank(arbiter_);
+        bond.arbiterRule(claimId, cap, true, bytes32(0));
+
+        // The claim's stored builder is unchanged after the ruling
+        // (the inheritance happens on the emitted event, not the
+        // stored record).
+        assertEq(bond.getClaim(claimId).builder, watchdogBuilder);
     }
 
     function test_constructor_revertsOnZeroAddress() public {

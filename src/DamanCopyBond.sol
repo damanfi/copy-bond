@@ -115,7 +115,7 @@ contract DamanCopyBond is IDamanCopyBond {
 
     // --- Follower lifecycle ----------------------------------------------
 
-    function subscribe(address leader, uint256 capital) external {
+    function subscribe(address leader, uint256 capital, bytes32 builder) external {
         Leader storage l = _leaders[leader];
         if (l.registeredAt == 0 || !l.active) revert NotLeader();
         bool ok = fiatTokenContract.transferFrom(msg.sender, address(this), capital);
@@ -124,9 +124,10 @@ contract DamanCopyBond is IDamanCopyBond {
             follower: msg.sender,
             leader: leader,
             capital: capital,
-            since: uint64(block.timestamp)
+            since: uint64(block.timestamp),
+            builder: builder
         });
-        emit FollowerSubscribed(msg.sender, leader, capital);
+        emit FollowerSubscribed(msg.sender, leader, capital, builder);
     }
 
     function unsubscribe(address leader) external {
@@ -161,7 +162,11 @@ contract DamanCopyBond is IDamanCopyBond {
 
     // --- Degradation flow ------------------------------------------------
 
-    function attestDegradation(address leader, bytes32 evidenceHash) external returns (uint256 claimId) {
+    function attestDegradation(
+        address leader,
+        bytes32 evidenceHash,
+        bytes32 builder
+    ) external returns (uint256 claimId) {
         Leader storage l = _leaders[leader];
         if (l.registeredAt == 0) revert NotLeader();
         claimId = _nextClaimId++;
@@ -173,9 +178,10 @@ contract DamanCopyBond is IDamanCopyBond {
             filedAt: uint64(block.timestamp),
             disputeWindowEnds: uint64(block.timestamp) + disputeWindowSeconds,
             status: ClaimStatus.Filed,
-            slashAmount: 0
+            slashAmount: 0,
+            builder: builder
         });
-        emit DegradationFlagged(claimId, leader, msg.sender, evidenceHash);
+        emit DegradationFlagged(claimId, leader, msg.sender, evidenceHash, builder);
     }
 
     function disputeAttestation(uint256 claimId) external {
@@ -188,7 +194,12 @@ contract DamanCopyBond is IDamanCopyBond {
         emit DisputeOpened(claimId, c.leader);
     }
 
-    function arbiterRule(uint256 claimId, uint256 slashAmount, bool upheld) external {
+    function arbiterRule(
+        uint256 claimId,
+        uint256 slashAmount,
+        bool upheld,
+        bytes32 builder
+    ) external {
         if (msg.sender != arbiterAddr) revert NotArbiter();
         Claim storage c = _claims[claimId];
         if (c.id == 0) revert ClaimNotFound(claimId);
@@ -197,6 +208,11 @@ contract DamanCopyBond is IDamanCopyBond {
         Leader storage l = _leaders[c.leader];
         uint256 cap = BondEconomics.maxSlashAmount(l.bondAmount);
         if (slashAmount > cap) revert SlashCapExceeded(BondEconomics.SLASH_CAP_BPS);
+
+        // `builder` on the ruling overrides the claim-side tag when
+        // non-zero; otherwise inherit from the claim so the
+        // attribution chain stays consistent.
+        bytes32 effectiveBuilder = builder == bytes32(0) ? c.builder : builder;
 
         if (upheld) {
             c.status = ClaimStatus.Upheld;
@@ -216,7 +232,7 @@ contract DamanCopyBond is IDamanCopyBond {
         } else {
             c.status = ClaimStatus.Rejected;
         }
-        emit ArbiterRuled(claimId, slashAmount, upheld);
+        emit ArbiterRuled(claimId, slashAmount, upheld, effectiveBuilder);
     }
 
     // --- View accessors --------------------------------------------------
