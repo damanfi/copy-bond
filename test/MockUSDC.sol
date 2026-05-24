@@ -12,8 +12,9 @@ contract MockUSDC is IERC20 {
         balances[to] += amount;
     }
 
-    function approve(address spender, uint256 amount) external {
+    function approve(address spender, uint256 amount) external returns (bool) {
         allowances[msg.sender][spender] = amount;
+        return true;
     }
 
     function transferFrom(address from, address to, uint256 amount) external returns (bool) {

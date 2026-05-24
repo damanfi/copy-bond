@@ -11,7 +11,8 @@ via_ir = true
 remappings = [
     "forge-std/=lib/forge-std/src/",
     "damanfi-protocol/=lib/damanfi-protocol/src/",
-    "reverbprotocol/=lib/reverbprotocol-protocol/src/"
+    "reverbprotocol/=lib/reverbprotocol-protocol/src/",
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/"
 ]
 
 [fmt]

@@ -3,16 +3,22 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {DamanCopyBond} from "../src/DamanCopyBond.sol";
+import {DamanBountyAccrual} from "../src/DamanBountyAccrual.sol";
+import {DamanReputationRegistry} from "../src/DamanReputationRegistry.sol";
 import {IDamanCopyBond} from "damanfi-protocol/IDamanCopyBond.sol";
 import {IUniverseWhitelist} from "damanfi-protocol/IUniverseWhitelist.sol";
 import {BondEconomics} from "damanfi-protocol/BondEconomics.sol";
 import {MockUSDC} from "./MockUSDC.sol";
 import {MockUniverse} from "./MockUniverse.sol";
+import {MockMessageTransmitterV2} from "./MockMessageTransmitterV2.sol";
 
 contract DamanCopyBondTest is Test {
     DamanCopyBond bond;
+    DamanBountyAccrual bountyAccrual;
+    DamanReputationRegistry reputationRegistry;
     MockUSDC usdc;
     MockUniverse universe;
+    MockMessageTransmitterV2 messageTransmitter;
 
     address leader = address(0xA001);
     address follower = address(0xB001);
@@ -32,10 +38,23 @@ contract DamanCopyBondTest is Test {
         universe = new MockUniverse();
         universe.setEligible(eligibleAsset, true);
 
+        bountyAccrual = new DamanBountyAccrual(address(usdc));
+        reputationRegistry = new DamanReputationRegistry(address(this), 1, -2);
+        messageTransmitter = new MockMessageTransmitterV2(address(usdc));
+
         bond = new DamanCopyBond(
             address(usdc), address(universe), refundProtocol,
-            arbiter_, oracle, treasury, BOND_LOCKUP, DISPUTE_WINDOW
+            arbiter_, oracle, treasury,
+            address(bountyAccrual), address(reputationRegistry),
+            address(messageTransmitter),
+            BOND_LOCKUP, DISPUTE_WINDOW
         );
+
+        // The copy-bond is the sole recorder against the reputation
+        // registry; wire it up post-deploy to break the construction
+        // cycle (registry needs copy-bond address; copy-bond needs
+        // registry address).
+        reputationRegistry.setRecorder(address(bond));
 
         usdc.mint(leader, 100_000e18);
         usdc.mint(follower, 50_000e18);
@@ -154,10 +173,17 @@ contract DamanCopyBondTest is Test {
         uint256 claimId = bond.attestDegradation(leader, bytes32("evidence"), bytes32(0));
 
         vm.prank(arbiter_);
-        bond.arbiterRule(claimId, cap, true, bytes32(0));
+        bond.arbiterRule(claimId, cap, true, bytes32(0), bytes32(0));
 
+        // 10/90 split: bountyAccrual receives 10%, treasury receives 90%.
+        uint256 expectedBounty = (cap * bond.WATCHDOG_BOUNTY_BPS()) / BondEconomics.BPS_DENOMINATOR;
+        uint256 expectedTreasury = cap - expectedBounty;
         assertEq(bond.getLeader(leader).bondAmount, bondPosted - cap);
-        assertEq(usdc.balanceOf(treasury), cap);
+        assertEq(usdc.balanceOf(treasury), expectedTreasury);
+        assertEq(usdc.balanceOf(address(bountyAccrual)), expectedBounty);
+        // Reputation registry recorded the upheld outcome.
+        assertEq(reputationRegistry.reputationScore(watchdog), 1);
+        assertEq(reputationRegistry.cumulativeUpheld(watchdog), 1);
     }
 
     function test_arbiterRule_revertsOnCapBreach() public {
@@ -170,7 +196,7 @@ contract DamanCopyBondTest is Test {
 
         vm.prank(arbiter_);
         vm.expectRevert(abi.encodeWithSelector(IDamanCopyBond.SlashCapExceeded.selector, BondEconomics.SLASH_CAP_BPS));
-        bond.arbiterRule(claimId, cap + 1, true, bytes32(0));
+        bond.arbiterRule(claimId, cap + 1, true, bytes32(0), bytes32(0));
     }
 
     function test_arbiterRule_rejectedClaimDoesNotSlash() public {
@@ -181,10 +207,13 @@ contract DamanCopyBondTest is Test {
         uint256 claimId = bond.attestDegradation(leader, bytes32("evidence"), bytes32(0));
 
         vm.prank(arbiter_);
-        bond.arbiterRule(claimId, 0, false, bytes32(0));
+        bond.arbiterRule(claimId, 0, false, bytes32(0), bytes32(0));
 
         assertEq(bond.getLeader(leader).bondAmount, bondPosted);
         assertEq(uint8(bond.getClaim(claimId).status), uint8(IDamanCopyBond.ClaimStatus.Rejected));
+        // Reputation registry recorded the rejection.
+        assertEq(reputationRegistry.reputationScore(watchdog), -2);
+        assertEq(reputationRegistry.cumulativeRejected(watchdog), 1);
     }
 
     function test_withdrawBond_blockedUntilLockup() public {
@@ -231,7 +260,7 @@ contract DamanCopyBondTest is Test {
         // arbiterRule with bytes32(0) inherits the claim's builder.
         uint256 cap = BondEconomics.maxSlashAmount(bond.getLeader(leader).bondAmount);
         vm.prank(arbiter_);
-        bond.arbiterRule(claimId, cap, true, bytes32(0));
+        bond.arbiterRule(claimId, cap, true, bytes32(0), bytes32(0));
 
         // The claim's stored builder is unchanged after the ruling
         // (the inheritance happens on the emitted event, not the
@@ -240,10 +269,62 @@ contract DamanCopyBondTest is Test {
     }
 
     function test_constructor_revertsOnZeroAddress() public {
-        vm.expectRevert(IDamanCopyBond.ZeroAddress.selector);
+        // Pass valid _fiatToken + _messageTransmitter so the substrate
+        // mixin's own check passes; then pass address(0) for a
+        // Daman-side param so NullAddress fires inside the Daman body.
+        vm.expectRevert(IDamanCopyBond.NullAddress.selector);
         new DamanCopyBond(
-            address(0), address(universe), refundProtocol, arbiter_, oracle, treasury, BOND_LOCKUP, DISPUTE_WINDOW
+            address(usdc), address(universe), refundProtocol, arbiter_, oracle, treasury,
+            address(0), address(reputationRegistry),
+            address(messageTransmitter),
+            BOND_LOCKUP, DISPUTE_WINDOW
         );
+    }
+
+    function test_postBondFromCCTP_activatesLeader() public {
+        uint256 aum = 10_000e18;
+        uint256 required = BondEconomics.requiredBondFor(BondEconomics.Tier.Retail, aum);
+
+        // Construct a CCTP message: 376 bytes of CCTP-shaped prefix,
+        // then ABI-encoded (address leader, Tier tier, uint256 aum)
+        // as the hook payload that CCTPReceiverMixin slices off.
+        bytes memory hookPayload = abi.encode(leader, IDamanCopyBond.Tier.Retail, aum);
+        bytes memory message = abi.encodePacked(new bytes(376), hookPayload);
+
+        // Prime the mock to mint `required` USDC into the bond on
+        // receive. Real CCTP burns on the source domain and the
+        // attestation services credit the destination; the mock skips
+        // both and mints directly.
+        messageTransmitter.setNextMint(address(bond), required);
+
+        bond.postBondFromCCTP(message, "");
+
+        IDamanCopyBond.Leader memory l = bond.getLeader(leader);
+        assertEq(l.bondAmount, required);
+        assertEq(uint8(l.tier), uint8(IDamanCopyBond.Tier.Retail));
+        assertEq(l.claimedAum, aum);
+        assertTrue(l.active);
+    }
+
+    function test_bountyAccrual_routes10PercentToWatchdog() public {
+        _activateLeader();
+        uint256 bondPosted = bond.getLeader(leader).bondAmount;
+        uint256 cap = BondEconomics.maxSlashAmount(bondPosted);
+
+        vm.prank(watchdog);
+        uint256 claimId = bond.attestDegradation(leader, bytes32("evidence"), bytes32(0));
+
+        vm.prank(arbiter_);
+        bond.arbiterRule(claimId, cap, true, bytes32(0), bytes32("ipfs-cid-hex"));
+
+        uint256 expectedBounty = (cap * bond.WATCHDOG_BOUNTY_BPS()) / BondEconomics.BPS_DENOMINATOR;
+
+        // Watchdog can claim the accrued bounty from BountyAccrual.
+        // Substrate's BountyAccrualVanilla numbers claims from 0.
+        uint256 watchdogBalanceBefore = usdc.balanceOf(watchdog);
+        vm.prank(watchdog);
+        bountyAccrual.claimBounty(0);
+        assertEq(usdc.balanceOf(watchdog), watchdogBalanceBefore + expectedBounty);
     }
 
     // --- helpers ---------------------------------------------------------
