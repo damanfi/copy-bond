@@ -55,6 +55,7 @@ contract DeployDaman is Script {
         address oracle = vm.envAddress("ORACLE_ADDRESS");
         address treasury = vm.envAddress("TREASURY_ADDRESS");
         uint256 timelockDelay = vm.envOr("TIMELOCK_DELAY_SECONDS", uint256(86400));
+        address existingTimelock = vm.envOr("TIMELOCK_ADDRESS", address(0));
 
         console2.log("deployer EOA:", deployer);
         console2.log("Safe multisig:", safe);
@@ -62,13 +63,20 @@ contract DeployDaman is Script {
 
         vm.startBroadcast();
 
-        // 1. Deploy TimelockController. Safe is the proposer + executor + admin.
-        address[] memory proposers = new address[](1);
-        proposers[0] = safe;
-        address[] memory executors = new address[](1);
-        executors[0] = safe;
-        TimelockController timelock = new TimelockController(timelockDelay, proposers, executors, safe);
-        console2.log("Timelock:", address(timelock));
+        // 1. Reuse the shared Timelock if TIMELOCK_ADDRESS is set;
+        //    otherwise deploy one with Safe as proposer + executor + admin.
+        address timelock;
+        if (existingTimelock != address(0)) {
+            timelock = existingTimelock;
+            console2.log("reusing shared Timelock:", timelock);
+        } else {
+            address[] memory proposers = new address[](1);
+            proposers[0] = safe;
+            address[] memory executors = new address[](1);
+            executors[0] = safe;
+            timelock = address(new TimelockController(timelockDelay, proposers, executors, safe));
+            console2.log("Timelock (new):", timelock);
+        }
 
         // 2 + 3. Deploy each impl, then a proxy pointing at it. The
         //         TimelockController is the initial owner on every
@@ -81,7 +89,7 @@ contract DeployDaman is Script {
         DamanBountyAccrual bountyImpl = new DamanBountyAccrual();
         DamanBountyAccrual bountyAccrual = DamanBountyAccrual(address(new ERC1967Proxy(
             address(bountyImpl),
-            abi.encodeCall(DamanBountyAccrual.initialize, (usdc, address(timelock)))
+            abi.encodeCall(DamanBountyAccrual.initialize, (usdc, timelock))
         )));
         console2.log("BountyAccrual impl:", address(bountyImpl));
         console2.log("BountyAccrual proxy:", address(bountyAccrual));
@@ -91,7 +99,7 @@ contract DeployDaman is Script {
             address(repImpl),
             abi.encodeCall(
                 DamanReputationRegistry.initialize,
-                (deployer, int256(1), int256(-2), address(timelock))
+                (deployer, int256(1), int256(-2), timelock)
             )
         )));
         console2.log("ReputationRegistry impl:", address(repImpl));
@@ -100,7 +108,7 @@ contract DeployDaman is Script {
         DamanBondYieldVault vaultImpl = new DamanBondYieldVault();
         DamanBondYieldVault bondYieldVault = DamanBondYieldVault(address(new ERC1967Proxy(
             address(vaultImpl),
-            abi.encodeCall(DamanBondYieldVault.initialize, (usdc, address(timelock)))
+            abi.encodeCall(DamanBondYieldVault.initialize, (usdc, timelock))
         )));
         console2.log("BondYieldVault impl:", address(vaultImpl));
         console2.log("BondYieldVault proxy:", address(bondYieldVault));
@@ -120,7 +128,7 @@ contract DeployDaman is Script {
                 messageTransmitter_: messageTransmitter,
                 bondLockupSeconds_: 7 days,
                 disputeWindowSeconds_: 1 days,
-                initialOwner: address(timelock)
+                initialOwner: timelock
             })))
         )));
         console2.log("DamanCopyBond impl:", address(bondImpl));
@@ -130,7 +138,7 @@ contract DeployDaman is Script {
         //    transfer admin to the Timelock so the registry is
         //    fully under multisig governance.
         reputationRegistry.setRecorder(address(bond));
-        reputationRegistry.transferAdmin(address(timelock));
+        reputationRegistry.transferAdmin(timelock);
 
         vm.stopBroadcast();
 
@@ -138,15 +146,15 @@ contract DeployDaman is Script {
         //    to revert past broadcast; what we can do is fail
         //    loudly if the owner is not the Timelock. The caller
         //    inspects the script output and re-runs after fixing.
-        require(bond.owner() == address(timelock), "copy-bond owner is not Timelock");
-        require(bountyAccrual.owner() == address(timelock), "bounty owner is not Timelock");
-        require(reputationRegistry.owner() == address(timelock), "reputation owner is not Timelock");
-        require(bondYieldVault.owner() == address(timelock), "vault owner is not Timelock");
-        require(reputationRegistry.admin() == address(timelock), "reputation admin is not Timelock");
+        require(bond.owner() == timelock, "copy-bond owner is not Timelock");
+        require(bountyAccrual.owner() == timelock, "bounty owner is not Timelock");
+        require(reputationRegistry.owner() == timelock, "reputation owner is not Timelock");
+        require(bondYieldVault.owner() == timelock, "vault owner is not Timelock");
+        require(reputationRegistry.admin() == timelock, "reputation admin is not Timelock");
 
         console2.log("--- Ownership verified. Timelock controls every Daman proxy. ---");
         console2.log("Persist these addresses to .deployments/arc-testnet.json:");
-        console2.log("  timelock:", address(timelock));
+        console2.log("  timelock:", timelock);
         console2.log("  bountyAccrual.proxy:", address(bountyAccrual));
         console2.log("  reputationRegistry.proxy:", address(reputationRegistry));
         console2.log("  bondYieldVault.proxy:", address(bondYieldVault));

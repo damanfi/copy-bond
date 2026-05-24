@@ -6,6 +6,7 @@ import {DamanCopyBond} from "../src/DamanCopyBond.sol";
 import {DamanBountyAccrual} from "../src/DamanBountyAccrual.sol";
 import {DamanReputationRegistry} from "../src/DamanReputationRegistry.sol";
 import {DamanBondYieldVault} from "../src/DamanBondYieldVault.sol";
+import {DamanBenevolence} from "../src/DamanBenevolence.sol";
 
 /// @notice Asserts that every external function selector and every
 ///         emitted event topic hash across the Daman contract surface
@@ -187,5 +188,73 @@ contract SelectorFreezeTest is Test {
 
     function test_selectorFrozen_accruedYield() public pure {
         assertEq(DamanBondYieldVault.accruedYield.selector, bytes4(0xc744ad19));
+    }
+
+    // --- DamanBenevolence selectors -----------------------------------
+
+    function test_selectorFrozen_requestLoan() public pure {
+        assertEq(DamanBenevolence.requestLoan.selector, bytes4(0x8d5d3429));
+    }
+
+    function test_selectorFrozen_requestLoanWithSignature() public pure {
+        assertEq(DamanBenevolence.requestLoanWithSignature.selector, bytes4(0x102fabc6));
+    }
+
+    function test_selectorFrozen_repay() public pure {
+        assertEq(DamanBenevolence.repay.selector, bytes4(0x371fd8e6));
+    }
+
+    // --- DamanBenevolence + extended registry events ------------------
+
+    function test_eventTopicFrozen_LoanRequested() public pure {
+        assertEq(
+            keccak256("LoanRequested(address,uint256,uint256)"),
+            bytes32(0x7468760830aff5679376e50470c0493d21c88c599388e89b08c9512b3f3fbc7d)
+        );
+    }
+
+    function test_eventTopicFrozen_LoanRequestedViaRelief() public pure {
+        assertEq(
+            keccak256("LoanRequestedViaRelief(address,address,uint256,uint256)"),
+            bytes32(0xc4e40abbd8f4f338f61c8fbaa0aa4bb346f44e48181a84734980c7355c8a5592)
+        );
+    }
+
+    function test_eventTopicFrozen_LoanRepaid() public pure {
+        assertEq(
+            keccak256("LoanRepaid(address,uint256,uint256)"),
+            bytes32(0xc7ce0a35f17b490de2a317e7fecb2cae86b1abffb03800b2f492823521382698)
+        );
+    }
+
+    function test_eventTopicFrozen_AgentRegistered() public pure {
+        assertEq(
+            keccak256("AgentRegistered(address,bytes32)"),
+            bytes32(0x2f1f603fdbf809c5197d557d6fe61c1fd7f3ce5e6d39cc413670069565749437)
+        );
+    }
+
+    /// @dev LoanRequest typed-data hash. Frozen because consumers (the
+    ///      daman-relief bee, the bee policy ticks) rely on this exact
+    ///      typehash to construct EIP-712 signatures.
+    function test_typedDataFrozen_LoanRequest() public pure {
+        assertEq(
+            keccak256("LoanRequest(address borrower,uint256 amount,uint256 nonce,uint256 deadline)"),
+            bytes32(0xa83f31e81f00f584649c96e7ea478e4d4a7efacd274edebfcf063f130cc62327)
+        );
+    }
+
+    // --- Extended reputation-registry selectors -----------------------
+
+    function test_selectorFrozen_register() public pure {
+        assertEq(DamanReputationRegistry.register.selector, bytes4(0xe1fa8e84));
+    }
+
+    function test_selectorFrozen_lastActivity() public pure {
+        assertEq(DamanReputationRegistry.lastActivity.selector, bytes4(0xf07e96b3));
+    }
+
+    function test_selectorFrozen_isRegistered() public pure {
+        assertEq(DamanReputationRegistry.isRegistered.selector, bytes4(0xc3c5a547));
     }
 }

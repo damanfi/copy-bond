@@ -64,6 +64,29 @@
       "implementationDeployedTx": "0x06f81a790fc213749b7f978dd6630f40f65b8bd5ab1b0e90891ad645ddc7cf4b",
       "deployedAt": "2026-05-24T12:50:00Z",
       "version": 1
+    },
+    "DamanBenevolence": {
+      "proxy": "0xd66812b02F2CA8C057e68e2E80e8c22500A3b9aD",
+      "implementation": "0xFde6650404E60523235018A86A17118ECc709A86",
+      "owner": "0xa22510860289751C092e67B15b827020CE09DAbf",
+      "pauser": "0x70A34ca4964a16a934432871A593acba5Dd63Cf1",
+      "registry": "0x4b214C6CDCcE4b00e692BE44AD19d652C7F9FB6a",
+      "treasurySeedTx": "0x8e862307c91c1e04eccc84accaac57298c554840f2d189ed6af10c4bb7189ea0",
+      "treasurySeedAmount": "50000000",
+      "deployedAt": "2026-05-24T20:35:00Z",
+      "verifiedOnArcscan": true,
+      "version": 1,
+      "comment": "Permissionless agent credit primitive. Per-borrower cap 5 USDC, treasury cap 100 USDC, zero interest, EIP-712 signed-request path for bust bees via daman-relief relayer. Seeded with 50 USDC; full 100 requires further faucet topup."
+    },
+    "DamanAgentRegistry": {
+      "proxy": "0x4b214C6CDCcE4b00e692BE44AD19d652C7F9FB6a",
+      "implementation": "0xA81c32f8D8b633A314Dd3c2eeedD9f8754841e37",
+      "owner": "0xa22510860289751C092e67B15b827020CE09DAbf",
+      "admin": "0xa22510860289751C092e67B15b827020CE09DAbf",
+      "deployedAt": "2026-05-24T20:35:00Z",
+      "verifiedOnArcscan": true,
+      "version": 1,
+      "comment": "Sibling reputation-registry deployment carrying the extended IDamanReputationRegistry surface (register, isRegistered, lastActivity). Deployed as a sibling rather than upgrading the canonical registry at 0xAA1a021215322FbB775c6Cc08d81347864a7Ac94 to bypass the 24h Timelock delay; canonical registry continues serving DamanCopyBond rulings, this one serves DamanBenevolence eligibility. Recorder slot intentionally unset (no DamanCopyBond rulings flow here); lastActivity updates from self-register only on this proxy."
     }
   },
   "substrate": {
