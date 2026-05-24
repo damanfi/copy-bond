@@ -1,0 +1,73 @@
+{
+  "network": "arc-testnet",
+  "chainId": 5042002,
+  "comment": "Daman contract surface on Arc testnet. Addresses populated by `forge script script/DeployDaman.s.sol` after the Safe + Timelock land on-chain. Until the deploy runs, every address slot is the zero placeholder. The storefront, bridge, and agents read this file (via env or fetch) for proxy + Timelock wiring.",
+  "safe": {
+    "address": "0x0000000000000000000000000000000000000000",
+    "threshold": 3,
+    "signers": [
+      "0x0000000000000000000000000000000000000000",
+      "0x0000000000000000000000000000000000000000",
+      "0x0000000000000000000000000000000000000000",
+      "0x0000000000000000000000000000000000000000",
+      "0x0000000000000000000000000000000000000000"
+    ],
+    "comment": "Patron king plus four operator-controlled signer keys (hardware wallets or HSM). Provisioned out-of-band via the Safe CLI or web app before the deploy script runs. Documented in docs/UPGRADE_AUTHORITY.md."
+  },
+  "timelock": {
+    "address": "0x0000000000000000000000000000000000000000",
+    "delaySeconds": 86400,
+    "admin": "SAFE_ADDRESS",
+    "comment": "TimelockController. Delay is 24h on testnet, 72h on mainnet. Admin + proposer + executor is the Safe address."
+  },
+  "contracts": {
+    "DamanCopyBond": {
+      "proxy": "0x0000000000000000000000000000000000000000",
+      "implementation": "0x0000000000000000000000000000000000000000",
+      "owner": "TIMELOCK_ADDRESS",
+      "deployedAt": "",
+      "version": 1
+    },
+    "DamanBountyAccrual": {
+      "proxy": "0x0000000000000000000000000000000000000000",
+      "implementation": "0x0000000000000000000000000000000000000000",
+      "owner": "TIMELOCK_ADDRESS",
+      "deployedAt": "",
+      "version": 1
+    },
+    "DamanReputationRegistry": {
+      "proxy": "0x0000000000000000000000000000000000000000",
+      "implementation": "0x0000000000000000000000000000000000000000",
+      "owner": "TIMELOCK_ADDRESS",
+      "admin": "TIMELOCK_ADDRESS",
+      "recorder": "DAMAN_COPY_BOND_PROXY_ADDRESS",
+      "deployedAt": "",
+      "version": 1
+    },
+    "DamanBondYieldVault": {
+      "proxy": "0x0000000000000000000000000000000000000000",
+      "implementation": "0x0000000000000000000000000000000000000000",
+      "owner": "TIMELOCK_ADDRESS",
+      "deployedAt": "",
+      "version": 1
+    }
+  },
+  "substrate": {
+    "RefundProtocolFixed_proxy": "0x0000000000000000000000000000000000000000",
+    "comment": "Read from reverbprotocol/protocol/.deployments/arc-testnet.json. The Daman copy-bond constructor records this address; substrate is deployed first and its address is wired into the Daman deploy env."
+  },
+  "humdRegistry": {
+    "address": "0x0000000000000000000000000000000000000000",
+    "comment": "Vanilla HumdRegistry from github.com/adiled/hum, deployed to Arc testnet as the immutable identity anchor for the Daman hum subnet. Single-tx deploy via `forge create lib/hum/contracts/src/HumdRegistry.sol:HumdRegistry`. No proxy, no Safe, no Timelock; the bytecode is the standard."
+  },
+  "arcPreDeploys": {
+    "USDC": "0x3600000000000000000000000000000000000000",
+    "EURC": "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+    "MessageTransmitterV2": "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
+    "TokenMessengerV2": "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
+    "GatewayWallet": "0x0077777d7EBA4688BDeF3E311b846F25870A19B9",
+    "GatewayMinter": "0x0022222ABE238Cc2C7Bb1f21003F0a260052475B",
+    "USYC_Teller": "0x9fdF14c5B14173D74C08Af27AebFf39240dC105A",
+    "FxEscrow": "0x867650F5eAe8df91445971f14d89fd84F0C9a9f8"
+  }
+}

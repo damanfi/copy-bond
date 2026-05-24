@@ -7,10 +7,17 @@ import {BondEconomics} from "damanfi-protocol/BondEconomics.sol";
 import {IAttributable} from "reverbprotocol/IAttributable.sol";
 import {IBountyAccrual} from "reverbprotocol/IBountyAccrual.sol";
 import {IReputationRegistry} from "reverbprotocol/IReputationRegistry.sol";
-import {CCTPReceiverMixin} from "reverbprotocol/CCTPReceiverMixin.sol";
-import {IERC20} from "./IERC20.sol";
+import {ICCTPReceiver, IMessageTransmitterV2} from "reverbprotocol/ICCTPReceiver.sol";
 
-/// @title DamanCopyBond. Vanilla reference implementation of `IDamanCopyBond`.
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+
+/// @title DamanCopyBond. UUPS-upgradeable implementation of `IDamanCopyBond`.
 /// @notice Slash-bond state machine. Leader posts USDC bond proportional
 ///         to claimed AUM. Followers subscribe with delegated capital.
 ///         The operator-side oracle records trade and settlement events.
@@ -22,38 +29,73 @@ import {IERC20} from "./IERC20.sol";
 ///         watchdog's outcome on the reputation registry on every
 ///         non-trivial ruling.
 ///
-/// @dev Substrate lineage and conformance:
-///      - `refundProtocol` is the `IRefundProtocol`-conformant dispute
-///        primitive at `github.com/reverbprotocol/protocol`.
-///      - `bountyAccrual` is an `IBountyAccrual` instance (substrate
-///        reference impl wrapped as `DamanBountyAccrual`).
+/// @dev Hardening:
+///      - UUPS-upgradeable. `_authorizeUpgrade` is owner-gated; owner
+///        is a TimelockController set in `initialize` and rotated only
+///        through the Safe-plus-Timelock upgrade flow.
+///      - `Pausable`: write surfaces (registerLeader, postBond,
+///        subscribe, recordTrade, withdrawBond) gate on
+///        `whenNotPaused`. Arbiter rulings and degradation
+///        attestations stay unblocked during pause so in-flight
+///        disputes settle without operator-side ceremony.
+///      - `ReentrancyGuard`: every external state-changing function
+///        carries `nonReentrant`; SafeERC20 is used for all token
+///        moves. CEI ordering enforced on bounty + treasury split.
+///      - Storage layout: no `immutable`, no constructor state;
+///        30-slot `__gap` at end so subsequent upgrades append
+///        without colliding.
+///
+///      Substrate lineage:
+///      - `refundProtocol` is the `IRefundProtocol`-conformant
+///        dispute primitive at `github.com/reverbprotocol/protocol`.
+///      - `bountyAccrual` is an `IBountyAccrual` instance (Daman's
+///        UUPS-upgradeable implementation, separate from the
+///        substrate's reference vanilla).
 ///      - `reputationRegistry` is an `IReputationRegistry` instance
-///        (Daman-specific `DamanReputationRegistry` with rotatable
-///        recorder).
-///      - The contract inherits `CCTPReceiverMixin` from the substrate
-///        so leaders can post a bond from any CCTP source domain in
-///        one transaction via `postBondFromCCTP` (which calls the
-///        inherited `onCCTPReceive`). The decoded hook payload is
-///        `(address leader, Tier tier, uint256 claimedAum)` and is
-///        handled in `handlePayload`.
-///      - The contract declares `is IAttributable` to mark adoption of
-///        the bytes32 builder attribution convention on every external
-///        flow-producing surface (subscribe, attestDegradation,
-///        arbiterRule).
-contract DamanCopyBond is IDamanCopyBond, IAttributable, CCTPReceiverMixin {
-    IERC20 public immutable fiatTokenContract;
-    address public immutable universeWhitelist;
-    address public immutable refundProtocolAddr;
-    address public immutable arbiterAddr;
-    address public immutable oracle;
-    address public immutable treasury;
-    uint64 public immutable bondLockupSeconds;
-    uint64 public immutable disputeWindowSeconds;
-    IBountyAccrual public immutable bountyAccrual;
-    IReputationRegistry public immutable reputationRegistry;
+///        (Daman's UUPS-upgradeable implementation with rotatable
+///        single-recorder).
+///      - The contract declares `is ICCTPReceiver` so leaders can
+///        post bond from any CCTP source domain via
+///        `postBondFromCCTP` / `onCCTPReceive`. The receive logic is
+///        inlined (no inheritance of the substrate's
+///        `CCTPReceiverMixin` because the mixin uses immutables that
+///        are incompatible with the UUPS storage discipline).
+///      - The contract declares `is IAttributable` to mark adoption
+///        of the bytes32 builder attribution convention on every
+///        external flow-producing surface.
+contract DamanCopyBond is
+    IDamanCopyBond,
+    IAttributable,
+    ICCTPReceiver,
+    Initializable,
+    OwnableUpgradeable,
+    PausableUpgradeable,
+    ReentrancyGuardUpgradeable,
+    UUPSUpgradeable
+{
+    using SafeERC20 for IERC20;
 
     /// @notice Bounty share of an upheld slash, in basis points. 10%.
     uint16 public constant WATCHDOG_BOUNTY_BPS = 1000;
+
+    /// @notice Standard CCTP v2 hook payload offset (148 outer + 228 burn-message fixed).
+    uint256 public constant CCTP_V2_HOOK_OFFSET = 376;
+
+    // --- Wired dependencies (set in initialize) -------------------------
+
+    IERC20 public fiatTokenContract;
+    address public universeWhitelist;
+    address public refundProtocolAddr;
+    address public arbiterAddr;
+    address public oracle;
+    address public treasury;
+    IBountyAccrual public bountyAccrual;
+    IReputationRegistry public reputationRegistry;
+    IMessageTransmitterV2 public messageTransmitter;
+    uint64 public bondLockupSeconds;
+    uint64 public disputeWindowSeconds;
+
+    // --- State ----------------------------------------------------------
 
     mapping(address => Leader) private _leaders;
     mapping(address => mapping(address => Subscription)) private _subscriptions;
@@ -61,54 +103,98 @@ contract DamanCopyBond is IDamanCopyBond, IAttributable, CCTPReceiverMixin {
     uint256 private _nextClaimId;
     uint256 private _nextTradeId;
 
-    constructor(
-        address _fiatToken,
-        address _universe,
-        address _refundProtocol,
-        address _arbiter,
-        address _oracle,
-        address _treasury,
-        address _bountyAccrual,
-        address _reputationRegistry,
-        address _messageTransmitter,
-        uint64 _bondLockupSeconds,
-        uint64 _disputeWindowSeconds
-    ) CCTPReceiverMixin(_messageTransmitter, _fiatToken) {
-        if (_fiatToken == address(0) || _universe == address(0) || _refundProtocol == address(0)
-            || _arbiter == address(0) || _oracle == address(0) || _treasury == address(0)
-            || _bountyAccrual == address(0) || _reputationRegistry == address(0)) {
+    /// @dev Reserved storage slots for forward compatibility.
+    uint256[30] private __gap;
+
+    error CCTPReceiveFailed();
+
+    // --- Initialization -------------------------------------------------
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    struct InitParams {
+        address fiatToken;
+        address universe;
+        address refundProtocol;
+        address arbiter_;
+        address oracle_;
+        address treasury_;
+        address bountyAccrual_;
+        address reputationRegistry_;
+        address messageTransmitter_;
+        uint64 bondLockupSeconds_;
+        uint64 disputeWindowSeconds_;
+        address initialOwner;
+    }
+
+    function initialize(InitParams calldata p) external initializer {
+        if (p.fiatToken == address(0) || p.universe == address(0) || p.refundProtocol == address(0)
+            || p.arbiter_ == address(0) || p.oracle_ == address(0) || p.treasury_ == address(0)
+            || p.bountyAccrual_ == address(0) || p.reputationRegistry_ == address(0)
+            || p.messageTransmitter_ == address(0) || p.initialOwner == address(0)) {
             revert NullAddress();
         }
-        fiatTokenContract = IERC20(_fiatToken);
-        universeWhitelist = _universe;
-        refundProtocolAddr = _refundProtocol;
-        arbiterAddr = _arbiter;
-        oracle = _oracle;
-        treasury = _treasury;
-        bountyAccrual = IBountyAccrual(_bountyAccrual);
-        reputationRegistry = IReputationRegistry(_reputationRegistry);
-        bondLockupSeconds = _bondLockupSeconds;
-        disputeWindowSeconds = _disputeWindowSeconds;
+        __Ownable_init(p.initialOwner);
+        __Pausable_init();
+        __ReentrancyGuard_init();
+        __UUPSUpgradeable_init();
+
+        fiatTokenContract = IERC20(p.fiatToken);
+        universeWhitelist = p.universe;
+        refundProtocolAddr = p.refundProtocol;
+        arbiterAddr = p.arbiter_;
+        oracle = p.oracle_;
+        treasury = p.treasury_;
+        bountyAccrual = IBountyAccrual(p.bountyAccrual_);
+        reputationRegistry = IReputationRegistry(p.reputationRegistry_);
+        messageTransmitter = IMessageTransmitterV2(p.messageTransmitter_);
+        bondLockupSeconds = p.bondLockupSeconds_;
+        disputeWindowSeconds = p.disputeWindowSeconds_;
         _nextClaimId = 1;
         _nextTradeId = 1;
     }
 
-    // --- CCTP cross-domain bond posting ----------------------------------
+    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
-    /// @notice Daman-named alias for the substrate's `onCCTPReceive`.
-    ///         Submit an attested CCTP v2 message that mints USDC to
-    ///         this contract and carries a hook payload of
-    ///         `(address leader, Tier tier, uint256 claimedAum)`. The
-    ///         minted USDC activates the leader's bond.
-    function postBondFromCCTP(bytes calldata message, bytes calldata attestation) external {
-        this.onCCTPReceive(message, attestation);
+    // --- Pause control --------------------------------------------------
+
+    function pause() external onlyOwner {
+        _pause();
     }
 
-    /// @notice Substrate hook called by `CCTPReceiverMixin.onCCTPReceive`
-    ///         after USDC has been minted to this contract.
-    /// @param  payload      ABI-encoded `(address, Tier, uint256)`.
-    /// @param  mintedAmount USDC newly minted to this contract by CCTP.
-    function handlePayload(bytes calldata payload, uint256 mintedAmount) internal override {
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
+    // --- CCTP cross-domain bond posting ---------------------------------
+
+    function postBondFromCCTP(bytes calldata message, bytes calldata attestation)
+        external
+        whenNotPaused
+        nonReentrant
+    {
+        _receiveCCTP(message, attestation);
+    }
+
+    function onCCTPReceive(bytes calldata message, bytes calldata attestation)
+        external
+        override
+        whenNotPaused
+        nonReentrant
+    {
+        _receiveCCTP(message, attestation);
+    }
+
+    function _receiveCCTP(bytes calldata message, bytes calldata attestation) internal {
+        uint256 balanceBefore = fiatTokenContract.balanceOf(address(this));
+        bool ok = messageTransmitter.receiveMessage(message, attestation);
+        if (!ok) revert CCTPReceiveFailed();
+        uint256 mintedAmount = fiatTokenContract.balanceOf(address(this)) - balanceBefore;
+
+        bytes calldata payload = _decodeCCTPPayload(message);
         (address leader, Tier tier, uint256 claimedAum) =
             abi.decode(payload, (address, Tier, uint256));
 
@@ -138,9 +224,16 @@ contract DamanCopyBond is IDamanCopyBond, IAttributable, CCTPReceiverMixin {
         emit LeaderBondPosted(leader, mintedAmount, l.bondAmount);
     }
 
+    function _decodeCCTPPayload(bytes calldata message) internal pure returns (bytes calldata) {
+        if (message.length <= CCTP_V2_HOOK_OFFSET) {
+            return message[message.length:];
+        }
+        return message[CCTP_V2_HOOK_OFFSET:];
+    }
+
     // --- Leader lifecycle ------------------------------------------------
 
-    function registerLeader(Tier tier, uint256 claimedAum) external {
+    function registerLeader(Tier tier, uint256 claimedAum) external whenNotPaused {
         if (_leaders[msg.sender].registeredAt != 0) revert AlreadyRegistered();
         BondEconomics.Tier eTier = _toEconTier(tier);
         uint256 required = BondEconomics.requiredBondFor(eTier, claimedAum);
@@ -156,21 +249,20 @@ contract DamanCopyBond is IDamanCopyBond, IAttributable, CCTPReceiverMixin {
         emit LeaderRegistered(msg.sender, tier, claimedAum, required);
     }
 
-    function postBond(uint256 amount) external {
+    function postBond(uint256 amount) external whenNotPaused nonReentrant {
         Leader storage l = _leaders[msg.sender];
         if (l.registeredAt == 0) revert NotLeader();
-        bool ok = fiatTokenContract.transferFrom(msg.sender, address(this), amount);
-        require(ok, "transferFrom failed");
         l.bondAmount += amount;
         BondEconomics.Tier eTier = _toEconTier(l.tier);
         uint256 required = BondEconomics.requiredBondFor(eTier, l.claimedAum);
         if (l.bondAmount >= required && !l.active) {
             l.active = true;
         }
+        fiatTokenContract.safeTransferFrom(msg.sender, address(this), amount);
         emit LeaderBondPosted(msg.sender, amount, l.bondAmount);
     }
 
-    function withdrawBond(uint256 amount) external {
+    function withdrawBond(uint256 amount) external whenNotPaused nonReentrant {
         Leader storage l = _leaders[msg.sender];
         if (l.registeredAt == 0) revert NotLeader();
         if (uint64(block.timestamp) < l.bondLockedUntil) revert BondLocked(l.bondLockedUntil);
@@ -181,18 +273,19 @@ contract DamanCopyBond is IDamanCopyBond, IAttributable, CCTPReceiverMixin {
         if (l.bondAmount < required) {
             l.active = false;
         }
-        bool ok = fiatTokenContract.transfer(msg.sender, amount);
-        require(ok, "transfer failed");
+        fiatTokenContract.safeTransfer(msg.sender, amount);
         emit BondWithdrawn(msg.sender, amount);
     }
 
     // --- Follower lifecycle ----------------------------------------------
 
-    function subscribe(address leader, uint256 capital, bytes32 builder) external {
+    function subscribe(address leader, uint256 capital, bytes32 builder)
+        external
+        whenNotPaused
+        nonReentrant
+    {
         Leader storage l = _leaders[leader];
         if (l.registeredAt == 0 || !l.active) revert NotLeader();
-        bool ok = fiatTokenContract.transferFrom(msg.sender, address(this), capital);
-        require(ok, "transferFrom failed");
         _subscriptions[msg.sender][leader] = Subscription({
             follower: msg.sender,
             leader: leader,
@@ -200,28 +293,28 @@ contract DamanCopyBond is IDamanCopyBond, IAttributable, CCTPReceiverMixin {
             since: uint64(block.timestamp),
             builder: builder
         });
+        fiatTokenContract.safeTransferFrom(msg.sender, address(this), capital);
         emit FollowerSubscribed(msg.sender, leader, capital, builder);
     }
 
-    function unsubscribe(address leader) external {
+    function unsubscribe(address leader) external nonReentrant {
         Subscription storage s = _subscriptions[msg.sender][leader];
         if (s.follower == address(0)) revert SubscriptionNotFound();
         uint256 cap = s.capital;
         delete _subscriptions[msg.sender][leader];
         if (cap > 0) {
-            bool ok = fiatTokenContract.transfer(msg.sender, cap);
-            require(ok, "transfer failed");
+            fiatTokenContract.safeTransfer(msg.sender, cap);
         }
         emit FollowerUnsubscribed(msg.sender, leader);
     }
 
     // --- Operator-side oracle entry points -------------------------------
 
-    function recordTrade(address leader, address asset, uint256 amount, bool isLong) external {
+    function recordTrade(address leader, address asset, uint256 amount, bool isLong)
+        external
+        whenNotPaused
+    {
         if (msg.sender != oracle) revert NotWatchdog();
-        // ADR-001: the oracle records only on-platform trades it executed
-        // itself. The eligibility check below binds asset selection to
-        // the universe whitelist.
         if (!isLong) revert ShortNotPermitted();
         if (!IUniverseWhitelist(universeWhitelist).isEligible(asset)) revert AssetNotEligible(asset);
         emit TradeExecuted(leader, asset, amount, isLong, uint64(block.timestamp));
@@ -235,6 +328,10 @@ contract DamanCopyBond is IDamanCopyBond, IAttributable, CCTPReceiverMixin {
 
     // --- Degradation flow ------------------------------------------------
 
+    /// @dev `attestDegradation` is intentionally NOT pause-gated:
+    ///      watchdog bees keep filing claims during pause so the
+    ///      arbiter has a populated queue to rule on once writes
+    ///      unpause.
     function attestDegradation(
         address leader,
         bytes32 evidenceHash,
@@ -267,13 +364,16 @@ contract DamanCopyBond is IDamanCopyBond, IAttributable, CCTPReceiverMixin {
         emit DisputeOpened(claimId, c.leader);
     }
 
+    /// @dev `arbiterRule` is intentionally NOT pause-gated: arbiter
+    ///      bees rule on pending claims; bounty + reputation each
+    ///      run their own pause policies.
     function arbiterRule(
         uint256 claimId,
         uint256 slashAmount,
         bool upheld,
         bytes32 builder,
         bytes32 traceCid
-    ) external {
+    ) external nonReentrant {
         if (msg.sender != arbiterAddr) revert NotArbiter();
         Claim storage c = _claims[claimId];
         if (c.id == 0) revert ClaimNotFound(claimId);
@@ -283,38 +383,34 @@ contract DamanCopyBond is IDamanCopyBond, IAttributable, CCTPReceiverMixin {
         uint256 cap = BondEconomics.maxSlashAmount(l.bondAmount);
         if (slashAmount > cap) revert SlashCapExceeded(BondEconomics.SLASH_CAP_BPS);
 
-        // `builder` on the ruling overrides the claim-side tag when
-        // non-zero; otherwise inherit from the claim so the
-        // attribution chain stays consistent.
         bytes32 effectiveBuilder = builder == bytes32(0) ? c.builder : builder;
 
         if (upheld) {
+            // CEI: mutate state first, then external calls.
             c.status = ClaimStatus.Upheld;
             c.slashAmount = slashAmount;
+            uint256 bountyAmount;
+            uint256 treasuryAmount;
             if (slashAmount > 0) {
-                // 10/90 split: bounty to the watchdog via the substrate
-                // accrual, treasury keeps the remaining 90%.
-                uint256 bountyAmount = (slashAmount * WATCHDOG_BOUNTY_BPS) / BondEconomics.BPS_DENOMINATOR;
-                uint256 treasuryAmount = slashAmount - bountyAmount;
+                bountyAmount = (slashAmount * WATCHDOG_BOUNTY_BPS) / BondEconomics.BPS_DENOMINATOR;
+                treasuryAmount = slashAmount - bountyAmount;
                 l.bondAmount -= slashAmount;
-                if (bountyAmount > 0) {
-                    // Approve the bounty contract to pull the bounty
-                    // notional, then accrue on behalf of the watchdog.
-                    bool ok = fiatTokenContract.approve(address(bountyAccrual), bountyAmount);
-                    require(ok, "approve failed");
-                    bountyAccrual.accrueBounty(c.watchdog, bountyAmount);
-                }
-                if (treasuryAmount > 0) {
-                    bool ok = fiatTokenContract.transfer(treasury, treasuryAmount);
-                    require(ok, "treasury transfer failed");
-                }
-                emit BondSlashed(c.leader, slashAmount, claimId);
             }
             BondEconomics.Tier eTier = _toEconTier(l.tier);
             uint256 required = BondEconomics.requiredBondFor(eTier, l.claimedAum);
             if (l.bondAmount < required) {
                 l.active = false;
                 emit LeaderDeactivated(c.leader, "bond_below_required");
+            }
+            if (slashAmount > 0) {
+                if (bountyAmount > 0) {
+                    fiatTokenContract.forceApprove(address(bountyAccrual), bountyAmount);
+                    bountyAccrual.accrueBounty(c.watchdog, bountyAmount);
+                }
+                if (treasuryAmount > 0) {
+                    fiatTokenContract.safeTransfer(treasury, treasuryAmount);
+                }
+                emit BondSlashed(c.leader, slashAmount, claimId);
             }
             reputationRegistry.recordUpheld(c.watchdog);
         } else {

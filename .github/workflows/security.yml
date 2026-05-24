@@ -1,0 +1,92 @@
+name: security
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  forge-tests:
+    name: forge test + selector freeze
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install dependencies
+        run: |
+          git clone --depth 1 https://github.com/foundry-rs/forge-std.git lib/forge-std
+          git clone --depth 1 https://github.com/damanfi/protocol.git lib/damanfi-protocol
+          git clone --depth 1 https://github.com/reverbprotocol/protocol.git lib/reverbprotocol-protocol
+          git clone --depth 1 --branch release-v5.1 https://github.com/OpenZeppelin/openzeppelin-contracts.git lib/openzeppelin-contracts
+          git clone --depth 1 --branch release-v5.1 https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable.git lib/openzeppelin-contracts-upgradeable
+          rm -rf lib/*/.git
+
+      - name: forge test
+        run: forge test -vv
+
+      - name: selector freeze gate
+        run: forge test --match-contract SelectorFreeze -vv
+
+  slither:
+    name: slither static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install dependencies
+        run: |
+          git clone --depth 1 https://github.com/foundry-rs/forge-std.git lib/forge-std
+          git clone --depth 1 https://github.com/damanfi/protocol.git lib/damanfi-protocol
+          git clone --depth 1 https://github.com/reverbprotocol/protocol.git lib/reverbprotocol-protocol
+          git clone --depth 1 --branch release-v5.1 https://github.com/OpenZeppelin/openzeppelin-contracts.git lib/openzeppelin-contracts
+          git clone --depth 1 --branch release-v5.1 https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable.git lib/openzeppelin-contracts-upgradeable
+          rm -rf lib/*/.git
+
+      - name: Slither static analysis
+        uses: crytic/slither-action@v0.4.0
+        with:
+          target: 'src/'
+          fail-on: high
+          slither-args: '--exclude naming-convention,solc-version,timestamp'
+
+  storage-layout:
+    name: storage layout validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install dependencies
+        run: |
+          git clone --depth 1 https://github.com/foundry-rs/forge-std.git lib/forge-std
+          git clone --depth 1 https://github.com/damanfi/protocol.git lib/damanfi-protocol
+          git clone --depth 1 https://github.com/reverbprotocol/protocol.git lib/reverbprotocol-protocol
+          git clone --depth 1 --branch release-v5.1 https://github.com/OpenZeppelin/openzeppelin-contracts.git lib/openzeppelin-contracts
+          git clone --depth 1 --branch release-v5.1 https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable.git lib/openzeppelin-contracts-upgradeable
+          rm -rf lib/*/.git
+
+      - name: Inspect storage layout per UUPS contract
+        run: |
+          for contract in DamanCopyBond DamanBountyAccrual DamanReputationRegistry DamanBondYieldVault; do
+            echo "--- $contract storage layout ---"
+            forge inspect "src/$contract.sol:$contract" storageLayout
+          done
