@@ -1,7 +1,7 @@
 {
   "network": "arc-testnet",
   "chainId": 5042002,
-  "comment": "Daman contract surface on Arc testnet. Safe + TimelockController deployed 2026-05-24 by operator script; shared with substrate (reverbprotocol/protocol, reverbprotocol/markets) for testnet per the bonus decision. Daman-specific proxy addresses populated by `forge script script/DeployDaman.s.sol` after the Safe + Timelock + substrate proxies land.",
+  "comment": "Daman contract surface on Arc testnet. Atomic deploy via script/DeployDaman.s.sol on 2026-05-24. Shared Safe + TimelockController with the substrate (reverbprotocol/protocol, reverbprotocol/markets) per the testnet posture; mainnet uses independent governance.",
   "safe": {
     "address": "0x70a34ca4964a16a934432871a593acba5dd63cf1",
     "threshold": 3,
@@ -28,43 +28,56 @@
   },
   "contracts": {
     "DamanCopyBond": {
-      "proxy": "0x0000000000000000000000000000000000000000",
-      "implementation": "0x0000000000000000000000000000000000000000",
+      "proxy": "0x493085c71f3CaceB8373db6e6ffeF43EacbC3e02",
+      "implementation": "0x818071bbd3b21cfe92a5299a994fed30234495c3",
       "owner": "0xa22510860289751C092e67B15b827020CE09DAbf",
-      "deployedAt": "",
+      "deployedTx": "0x42a6fa21797ffb75944d3d02dbd5f8e2a134883bcd3a1505ff9d3806b6c34b84",
+      "implementationDeployedTx": "0x2144cbbe589c38cd0da94e22cb8cb64b082632186229b06ac3f9a618c5e6a855",
+      "deployedAt": "2026-05-24T12:50:00Z",
       "version": 1
     },
     "DamanBountyAccrual": {
-      "proxy": "0x0000000000000000000000000000000000000000",
-      "implementation": "0x0000000000000000000000000000000000000000",
+      "proxy": "0xF0Dc40875f56D0703B4C9e3823ACa5d9d9E73F16",
+      "implementation": "0x037c6f6fb36ba37bd9974f391ada0db3cdb93b27",
       "owner": "0xa22510860289751C092e67B15b827020CE09DAbf",
-      "deployedAt": "",
+      "deployedTx": "0xbe1f1ae501c29186c7b8abca16c1d4388b9237e70b961954fb107f8db1d2cb1a",
+      "implementationDeployedTx": "0xd778c4bb48a05e7250fa749f64f04f784934bcff5c6d0a215622e8c9cb1db196",
+      "deployedAt": "2026-05-24T12:50:00Z",
       "version": 1
     },
     "DamanReputationRegistry": {
-      "proxy": "0x0000000000000000000000000000000000000000",
-      "implementation": "0x0000000000000000000000000000000000000000",
+      "proxy": "0xAA1a021215322FbB775c6Cc08d81347864a7Ac94",
+      "implementation": "0x6be1149fbac3bc5e789065b022ce051f3e945fc2",
       "owner": "0xa22510860289751C092e67B15b827020CE09DAbf",
       "admin": "0xa22510860289751C092e67B15b827020CE09DAbf",
-      "recorder": "DAMAN_COPY_BOND_PROXY_ADDRESS",
-      "deployedAt": "",
+      "recorder": "0x493085c71f3CaceB8373db6e6ffeF43EacbC3e02",
+      "deployedTx": "0x8a0fe52b577967a40fed82117dedc353a507fbef8a4500f9108ef5a436793d7a",
+      "implementationDeployedTx": "0xb788e41ff38dc01a4e400979253a1998d15707ffac510ccba32cb6c528b4a1f3",
+      "deployedAt": "2026-05-24T12:50:00Z",
       "version": 1
     },
     "DamanBondYieldVault": {
-      "proxy": "0x0000000000000000000000000000000000000000",
-      "implementation": "0x0000000000000000000000000000000000000000",
+      "proxy": "0xe98b4695753D03B644c063C0bb3A3bdd01Cc50dD",
+      "implementation": "0x724dd2eeb5e8f83c7af634460c3b03171bcdf065",
       "owner": "0xa22510860289751C092e67B15b827020CE09DAbf",
-      "deployedAt": "",
+      "deployedTx": "0xff8fe823a24f105908901dcdbabdf5577d890054f69b21d392b43b734b397604",
+      "implementationDeployedTx": "0x06f81a790fc213749b7f978dd6630f40f65b8bd5ab1b0e90891ad645ddc7cf4b",
+      "deployedAt": "2026-05-24T12:50:00Z",
       "version": 1
     }
   },
   "substrate": {
-    "RefundProtocolFixed_proxy": "0x0000000000000000000000000000000000000000",
-    "comment": "Populated by after UUPS refactor lands; read from reverbprotocol/protocol/.deployments/arc-testnet.json. Daman copy-bond constructor records this address."
+    "RefundProtocolFixed_proxy": "0xc8bF99c55703bc682a3Efd5c8A728EaEda3E121F",
+    "RefundProtocolFixed_implementation": "0xc4d76141CEA6b8D4b1bBF467e92d6a87F46C53Ed",
+    "Operator_proxy": "0x344b472b7b1ad0a35e11718bc063fd46f4282db2",
+    "Operator_implementation": "0x4223f0b25c6471094e5b22e393478a125057d9c8",
+    "comment": "Read from reverbprotocol/protocol/.deployments/arc-testnet.json + reverbprotocol/markets/.deployments/arc-testnet.json."
   },
   "humdRegistry": {
-    "address": "0x0000000000000000000000000000000000000000",
-    "comment": "Vanilla HumdRegistry from github.com/adiled/hum, deployed to Arc testnet as the immutable identity anchor. Single-tx deploy via forge create lib/hum/contracts/src/HumdRegistry.sol:HumdRegistry. No proxy, no Safe, no Timelock; the bytecode is the standard."
+    "address": "0x02CAf55d8a8c43453268764e84cb297CfB347749",
+    "deployedTx": "0x4f90d37ed83192abf2588373faec00a08f857dd9dc5f437ad79c1e33ef39d5aa",
+    "deployedAt": "2026-05-24T12:30:00Z",
+    "comment": "Vanilla HumdRegistry from github.com/adiled/hum, deployed to Arc testnet as the immutable identity anchor. Single-tx deploy; no proxy, no Safe, no Timelock."
   },
   "arcPreDeploys": {
     "USDC": "0x3600000000000000000000000000000000000000",
