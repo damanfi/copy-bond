@@ -8,6 +8,9 @@ lib/
 .env
 .env.*
 
+# signer keys (operator-side custody; never commit)
+.env.signers/
+
 # logs
 *.log
 
